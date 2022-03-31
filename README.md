@@ -1,1 +1,1 @@
-# INR-meta-mearning
+# INR-meta-learning
