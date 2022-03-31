@@ -1,5 +1,6 @@
 from math import gamma
 from random import sample
+from tabnanny import verbose
 # from turtle import forward
 import torch.nn.functional as F
 import datetime
@@ -326,7 +327,7 @@ class MNIST():
     def __init__(self, data_path):
         transform = transforms.Compose(
             [transforms.ToTensor(),
-             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+             transforms.Normalize((0.5), (0.5))])
 
         self.dataset = torchvision.datasets.MNIST(root=data_path, train=True,
                                                 download=False, transform=transform)
@@ -341,7 +342,8 @@ class MNIST():
         img_flat = img.view(-1, 1)
         return {'context':{'x':self.meshgrid, 'y':img_flat}, 
                 'query':{'x':self.meshgrid, 'y':img_flat},
-                'label':label}
+                'label':label,
+                'index':item}
 
 
 def l2_loss(prediction, gt):
@@ -368,10 +370,100 @@ def MNIST_test():
     here = os.path.join(os.path.dirname(__file__)) 
     data_path = os.path.join(here, '../../dataset/')
     dataset = MNIST(data_path)
-    dataloader = DataLoader(dataset, batch_size=1, num_workers=0,shuffle=False)
-    sample = next(iter(dataloader))
-    print(sample)
+    dataloader = DataLoader(dataset, batch_size=32, num_workers=0,shuffle=True)
 
+    hyper_in_features = 100
+    hyper_hidden_layers = 4
+    hyper_hidden_features = 300
+
+    in_features=2
+    hidden_features=128
+    hidden_layers=1
+    out_features=1
+
+    img_siren = Siren(in_features=in_features, hidden_features=hidden_features, 
+                        hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True).cuda()
+
+    hyper_network = HyperNetwork(hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
+
+    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
+
+    optim = torch.optim.Adam(lr=2e-5, params=HyperNetEmbedd.parameters())
+    train_scheduler = torch.optim.lr_scheduler.StepLR(optim,1,gamma=0.1)
+    steps_til_summary = 100
+    log_dir = os.path.join(here, './output')
+    check_point_dir = os.path.join(here, './checkpoint1')
+    writer = SummaryWriter(log_dir=log_dir)
+    iteration = 0
+
+    for epoch in range(1,5):
+        # index_start = 0
+        # index_end = 0
+        for step, sample in enumerate(dataloader):
+            # index_end = index_start + len(sample['label'])
+            # #print('from {} to {}'.format(index_start,index_end))
+            # index_end = len(dataset) if index_end > len(dataset) - 1 else index_end
+            sample = dict_to_gpu(sample)
+            # feats = np.arange(index_start,index_end,1)
+            feats = sample['index']
+            #print(feats)
+            #print(feats)
+            # feats = feats.cuda()
+            loss = 0.0
+            #print(step)
+            if not feats.numel():
+                print('continue')
+                continue
+            for idx in range(len(feats)):
+                feat = feats[idx]
+                model_output = HyperNetEmbedd(feat.unsqueeze(0))
+                param = model_output
+                output = img_siren(sample['context']['x'][idx],params=param)
+                loss += l2_loss(output,sample['context']['y'][idx]) 
+
+            if not step % steps_til_summary:
+                print('in epoch {}, step {}, the loss is {}'.format(epoch, step, loss/32))  
+                
+
+            # index_start = index_end
+            optim.zero_grad()
+            loss.backward()
+            optim.step()      
+
+            iteration += 1
+
+            writer.add_scalar('Loss/train', loss, iteration)
+
+        meshgrid = get_mgrid(sidelen=28)
+        meshgrid = meshgrid.unsqueeze(0)
+        meshgrid = meshgrid.cuda()
+        with torch.no_grad():
+            feats = np.arange(0,5,1)
+            #print(feats)
+            feats = torch.LongTensor(feats).unsqueeze(0)
+            feats = feats.cuda()
+
+            for idx in range(feats.shape[1]):
+                fig, axes = plt.subplots(1,1)
+                feat = feats[0][idx]
+                model_output = HyperNetEmbedd(feat.unsqueeze(0))
+                param = model_output
+                output = img_siren(sample['context']['x'][idx],params=param)
+                output = img_siren(meshgrid,params=param)
+                plot_sample_image(output, ax=axes)
+                axes.set_title(str(idx), fontsize=25)
+                path = os.path.join(here, './{}_{}.png'.format(epoch,idx))
+                plt.savefig(path,format='png')
+                plt.cla()
+            plt.close('all')
+
+        train_scheduler.step()
+
+    state_dict = HyperNetEmbedd.state_dict()
+    for k, v in state_dict.items():
+        state_dict[k] = v.cpu()
+
+    torch.save({'model_state_dict':state_dict},check_point_dir)
 
 def main():
 
@@ -379,13 +471,13 @@ def main():
     #     device = torch.device('cuda:{}'.format(cuda_device[0]))
 
     hyper_in_features = 100
-    hyper_hidden_layers = 3
-    hyper_hidden_features = 300
+    hyper_hidden_layers = 4
+    hyper_hidden_features = 500
 
     in_features=2
     hidden_features=128
-    hidden_layers=3
-    out_features=3
+    hidden_layers=1
+    out_features=1
 
     img_siren = Siren(in_features=in_features, hidden_features=hidden_features, 
                         hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True).cuda()
@@ -403,7 +495,6 @@ def main():
     dataloader = DataLoader(dataset, batch_size=32, num_workers=0,shuffle=False)
 
     HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
-    embedd = nn.Embedding(len(dataset),hyper_in_features).cuda()
 
     optim = torch.optim.Adam(lr=1e-4, params=HyperNetEmbedd.parameters())
     train_scheduler = torch.optim.lr_scheduler.StepLR(optim,5,gamma=0.1)
