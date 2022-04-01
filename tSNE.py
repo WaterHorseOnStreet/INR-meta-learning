@@ -210,7 +210,7 @@ if __name__ == "__main__":
 
     HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
 
-    checkpoint = torch.load('./checkpoint2.pth')
+    checkpoint = torch.load('./checkpoint3.pth')
     HyperNetEmbedd.load_state_dict(checkpoint['model_state_dict'])
 
     X = []

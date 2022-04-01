@@ -4,18 +4,25 @@ from tabnanny import verbose
 # from turtle import forward
 import torch.nn.functional as F
 import datetime
+from collections import OrderedDict, Mapping
 import torch
 import matplotlib.pyplot as plt
 from torch import dtype, nn
 from torchmeta.modules import (MetaModule, MetaSequential)
 from collections import OrderedDict
 import numpy as np
-from Siren_meta import BatchLinear, Siren, get_mgrid, dict_to_gpu
+from Siren_meta import BatchLinear, Siren, get_mgrid
 import torchvision
 from torchvision import transforms
 import os
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
+
+def dict_to_gpu(ob):
+    if isinstance(ob, Mapping):
+        return {k: dict_to_gpu(v) for k, v in ob.items()}
+    else:
+        return ob.cuda()
 
 def init_weights_normal(m):
     if hasattr(m, 'weight'):
@@ -157,7 +164,7 @@ class Hyper_Net_Embedd(nn.Module):
         for name, net, param_shape in zip(self.names, self.nets, self.param_shapes):
             batch_param_shape = (-1,) + param_shape
             params[name] = net(z).reshape(batch_param_shape)
-        return params
+        return z, params
 
 
     def get_embedd(self,index):
@@ -365,12 +372,32 @@ def plot_sample_image(img_batch, ax):
     ax.set_axis_off()
     ax.imshow(img)
 
-def MNIST_test():
+def cdist(embedd_dict):
+    cross_dist = 0.0
+    count = 0
+    for key, value in embedd_dict.items():
+        embedd = torch.stack(value,dim=0).cuda()
+        cross_dist += dist(embedd, embedd)
+        count += 1
 
+    return cross_dist/count
+
+def dist(input1,input2):
+    dist = 0.0
+    for i in range(input1.shape[0]-1):
+        in1 = torch.nn.functional.normalize(input1[i])
+        for j in range(i+1,input2.shape[0]):
+            in2 = torch.nn.functional.normalize(input2[j])
+            dist += torch.norm(in1 - in2)
+
+    return dist/(input1.shape[0]*(input1.shape[0]-1))
+
+def MNIST_test():
+    batch_size = 32
     here = os.path.join(os.path.dirname(__file__)) 
     data_path = os.path.join(here, '../../dataset/')
     dataset = MNIST(data_path)
-    dataloader = DataLoader(dataset, batch_size=32, num_workers=0,shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=4,shuffle=True)
 
     hyper_in_features = 100
     hyper_hidden_layers = 4
@@ -382,11 +409,11 @@ def MNIST_test():
     out_features=1
 
     img_siren = Siren(in_features=in_features, hidden_features=hidden_features, 
-                        hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True).cuda()
+                        hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True)
 
-    hyper_network = HyperNetwork(hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
-
-    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
+    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren)
+    # HyperNetEmbedd= nn.DataParallel(HyperNetEmbedd)
+    HyperNetEmbedd.cuda()
 
     optim = torch.optim.Adam(lr=2e-5, params=HyperNetEmbedd.parameters())
     train_scheduler = torch.optim.lr_scheduler.StepLR(optim,1,gamma=0.1)
@@ -406,23 +433,42 @@ def MNIST_test():
             sample = dict_to_gpu(sample)
             # feats = np.arange(index_start,index_end,1)
             feats = sample['index']
+            labels = sample['label']
+            keys = torch.unique(labels)
+            labels = labels.detach().cpu().numpy()
+            keys = keys.detach().cpu().numpy()
             #print(feats)
             #print(feats)
             # feats = feats.cuda()
             loss = 0.0
             #print(step)
+            index_dict = dict.fromkeys(set(keys), [])
+            loss_reconstruction = 0.0
+            # print(index_dict)
             if not feats.numel():
                 print('continue')
                 continue
             for idx in range(len(feats)):
                 feat = feats[idx]
-                model_output = HyperNetEmbedd(feat.unsqueeze(0))
+                embedding, model_output = HyperNetEmbedd(feat.unsqueeze(0))
                 param = model_output
                 output = img_siren(sample['context']['x'][idx],params=param)
-                loss += l2_loss(output,sample['context']['y'][idx]) 
+                loss_reconstruction += l2_loss(output,sample['context']['y'][idx]) 
+                if idx == 0:
+                    print(embedding.shape)
+                key_idx = labels[idx]
+                print('append idx of {}'.format(key_idx))
+                index_dict[key_idx].append(embedding)
+
+                print('the length of label 1 is {}'.format(len(index_dict[key_idx])))
+            loss_dist = cdist(index_dict)
+            loss_reconstruction = loss_reconstruction/batch_size
+            loss = 0.3*loss_reconstruction + 0.7*loss_dist
 
             if not step % steps_til_summary:
-                print('in epoch {}, step {}, the loss is {}'.format(epoch, step, loss/32))  
+                print('in epoch {}, step {}, the loss is {}'.format(epoch, step, loss))  
+                print('the dist loss is {}'.format(loss_dist))
+                print('the reconstruction loss is {}'.format(loss_reconstruction))
                 
 
             # index_start = index_end
@@ -446,7 +492,7 @@ def MNIST_test():
             for idx in range(feats.shape[1]):
                 fig, axes = plt.subplots(1,1)
                 feat = feats[0][idx]
-                model_output = HyperNetEmbedd(feat.unsqueeze(0))
+                embedding, model_output = HyperNetEmbedd(feat.unsqueeze(0))
                 param = model_output
                 output = img_siren(sample['context']['x'][idx],params=param)
                 output = img_siren(meshgrid,params=param)
@@ -632,4 +678,5 @@ def main():
         torch.save({'model_state_dict':hyper_network.state_dict()})
 
 if __name__ == '__main__':
+    # device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
     MNIST_test()
