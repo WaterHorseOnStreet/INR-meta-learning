@@ -16,7 +16,7 @@ import torchvision
 from torchvision import transforms
 import os
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 
 def dict_to_gpu(ob):
     if isinstance(ob, Mapping):
@@ -337,7 +337,7 @@ class MNIST():
              transforms.Normalize((0.5), (0.5))])
 
         self.dataset = torchvision.datasets.MNIST(root=data_path, train=True,
-                                                download=False, transform=transform)
+                                                download=True, transform=transform)
         
         self.meshgrid = get_mgrid(sidelen=28)
     
@@ -395,16 +395,16 @@ def dist(input1,input2):
 def MNIST_test():
     batch_size = 32
     here = os.path.join(os.path.dirname(__file__)) 
-    data_path = os.path.join(here, '../../dataset/')
+    data_path = os.path.join(here, './data')
     dataset = MNIST(data_path)
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=4,shuffle=True)
 
-    hyper_in_features = 100
+    hyper_in_features = 128
     hyper_hidden_layers = 4
     hyper_hidden_features = 300
 
     in_features=2
-    hidden_features=128
+    hidden_features=256
     hidden_layers=1
     out_features=1
 
@@ -415,12 +415,12 @@ def MNIST_test():
     # HyperNetEmbedd= nn.DataParallel(HyperNetEmbedd)
     HyperNetEmbedd.cuda()
 
-    optim = torch.optim.Adam(lr=2e-5, params=HyperNetEmbedd.parameters())
+    optim = torch.optim.Adam(lr=1e-6, params=HyperNetEmbedd.parameters(),weight_decay=0.1,betas=(0.0, 0.9))
     train_scheduler = torch.optim.lr_scheduler.StepLR(optim,1,gamma=0.1)
     steps_til_summary = 100
     log_dir = os.path.join(here, './output')
     check_point_dir = os.path.join(here, './checkpoint1')
-    writer = SummaryWriter(log_dir=log_dir)
+    # writer = SummaryWriter(log_dir=log_dir)
     iteration = 0
 
     for epoch in range(1,5):
@@ -442,9 +442,19 @@ def MNIST_test():
             # feats = feats.cuda()
             loss = 0.0
             #print(step)
-            index_dict = dict.fromkeys(set(keys), [])
+            index_dict = {}
             loss_reconstruction = 0.0
             # print(index_dict)
+            l0 = []
+            l1 = []
+            l2 = []
+            l3 = []
+            l4 = []
+            l5 = []
+            l6 = []
+            l7 = []
+            l8 = []
+            l9 = []
             if not feats.numel():
                 print('continue')
                 continue
@@ -454,13 +464,52 @@ def MNIST_test():
                 param = model_output
                 output = img_siren(sample['context']['x'][idx],params=param)
                 loss_reconstruction += l2_loss(output,sample['context']['y'][idx]) 
-                if idx == 0:
-                    print(embedding.shape)
-                key_idx = labels[idx]
-                print('append idx of {}'.format(key_idx))
-                index_dict[key_idx].append(embedding)
+                v_i = labels[idx]
+                if v_i == 0:
+                    l0.append(embedding)
+                elif v_i == 1:
+                    l1.append(embedding)
+                elif v_i == 2:
+                    l2.append(embedding)
+                elif v_i == 3:
+                    l3.append(embedding)
+                elif v_i == 4:
+                    l4.append(embedding)
+                elif v_i == 5:
+                    l5.append(embedding)
+                elif v_i == 6:
+                    l6.append(embedding)
+                elif v_i == 7:
+                    l7.append(embedding)
+                elif v_i == 8:
+                    l8.append(embedding)
+                elif v_i == 9:
+                    l9.append(embedding)
+                else:
+                    pass
 
-                print('the length of label 1 is {}'.format(len(index_dict[key_idx])))
+            if len(l0)>1:
+                index_dict[0] = l0
+            if len(l1)>1:
+                index_dict[1] = l1
+            if len(l2)>1:
+                index_dict[2] = l2
+            if len(l3)>1:
+                index_dict[3] = l3
+            if len(l4)>1:
+                index_dict[4] = l4
+            if len(l5)>1:
+                index_dict[5] = l5
+            if len(l6)>1:
+                index_dict[6] = l6
+            if len(l7)>1:
+                index_dict[7] = l7
+            if len(l8)>1:
+                index_dict[8] = l8
+            if len(l9)>1:
+                index_dict[9] = l9
+
+            # print('the length of label 1 is {}'.format(len(index_dict.keys())))
             loss_dist = cdist(index_dict)
             loss_reconstruction = loss_reconstruction/batch_size
             loss = 0.3*loss_reconstruction + 0.7*loss_dist
@@ -478,7 +527,7 @@ def MNIST_test():
 
             iteration += 1
 
-            writer.add_scalar('Loss/train', loss, iteration)
+            # writer.add_scalar('Loss/train', loss, iteration)
 
         meshgrid = get_mgrid(sidelen=28)
         meshgrid = meshgrid.unsqueeze(0)
