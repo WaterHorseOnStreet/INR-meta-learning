@@ -336,10 +336,17 @@ class MNIST():
             [transforms.ToTensor(),
              transforms.Normalize((0.5), (0.5))])
 
-        self.dataset = torchvision.datasets.MNIST(root=data_path, train=True,
-                                                download=True, transform=transform)
-        
+        dataset = torchvision.datasets.MNIST(root=data_path, train=True,
+                                                download=False, transform=transform)
+        self.dataset = dataset
         self.meshgrid = get_mgrid(sidelen=28)
+        idx = dataset.targets==3
+        idx2 = dataset.targets==8
+        idx3 = dataset.targets==4
+        idx += idx2
+        idx += idx3
+        self.dataset.data = dataset.data[idx]
+        self.dataset.targets = dataset.targets[idx]
     
     def __len__(self):
         return len(self.dataset)
@@ -400,12 +407,12 @@ def MNIST_test():
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=4,shuffle=True)
 
     hyper_in_features = 128
-    hyper_hidden_layers = 4
-    hyper_hidden_features = 300
+    hyper_hidden_layers = 3
+    hyper_hidden_features = 1024
 
     in_features=2
-    hidden_features=256
-    hidden_layers=1
+    hidden_features=512
+    hidden_layers=0
     out_features=1
 
     img_siren = Siren(in_features=in_features, hidden_features=hidden_features, 
@@ -413,17 +420,18 @@ def MNIST_test():
 
     HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren)
     # HyperNetEmbedd= nn.DataParallel(HyperNetEmbedd)
+    print(HyperNetEmbedd)
     HyperNetEmbedd.cuda()
 
-    optim = torch.optim.Adam(lr=1e-6, params=HyperNetEmbedd.parameters(),weight_decay=0.1,betas=(0.0, 0.9))
-    train_scheduler = torch.optim.lr_scheduler.StepLR(optim,1,gamma=0.1)
+    optim = torch.optim.Adam(lr=0.0001, params=HyperNetEmbedd.parameters())#,weight_decay=0.1,betas=(0.0, 0.9))
+    train_scheduler = torch.optim.lr_scheduler.StepLR(optim,10,gamma=0.5)
     steps_til_summary = 100
     log_dir = os.path.join(here, './output')
     check_point_dir = os.path.join(here, './checkpoint1')
     # writer = SummaryWriter(log_dir=log_dir)
     iteration = 0
 
-    for epoch in range(1,5):
+    for epoch in range(1,100):
         # index_start = 0
         # index_end = 0
         for step, sample in enumerate(dataloader):
@@ -464,60 +472,61 @@ def MNIST_test():
                 param = model_output
                 output = img_siren(sample['context']['x'][idx],params=param)
                 loss_reconstruction += l2_loss(output,sample['context']['y'][idx]) 
-                v_i = labels[idx]
-                if v_i == 0:
-                    l0.append(embedding)
-                elif v_i == 1:
-                    l1.append(embedding)
-                elif v_i == 2:
-                    l2.append(embedding)
-                elif v_i == 3:
-                    l3.append(embedding)
-                elif v_i == 4:
-                    l4.append(embedding)
-                elif v_i == 5:
-                    l5.append(embedding)
-                elif v_i == 6:
-                    l6.append(embedding)
-                elif v_i == 7:
-                    l7.append(embedding)
-                elif v_i == 8:
-                    l8.append(embedding)
-                elif v_i == 9:
-                    l9.append(embedding)
-                else:
-                    pass
+                # v_i = labels[idx]
+                # if v_i == 0:
+                #     l0.append(embedding)
+                # elif v_i == 1:
+                #     l1.append(embedding)
+                # elif v_i == 2:
+                #     l2.append(embedding)
+                # elif v_i == 3:
+                #     l3.append(embedding)
+                # elif v_i == 4:
+                #     l4.append(embedding)
+                # elif v_i == 5:
+                #     l5.append(embedding)
+                # elif v_i == 6:
+                #     l6.append(embedding)
+                # elif v_i == 7:
+                #     l7.append(embedding)
+                # elif v_i == 8:
+                #     l8.append(embedding)
+                # elif v_i == 9:
+                #     l9.append(embedding)
+                # else:
+                #     pass
 
-            if len(l0)>1:
-                index_dict[0] = l0
-            if len(l1)>1:
-                index_dict[1] = l1
-            if len(l2)>1:
-                index_dict[2] = l2
-            if len(l3)>1:
-                index_dict[3] = l3
-            if len(l4)>1:
-                index_dict[4] = l4
-            if len(l5)>1:
-                index_dict[5] = l5
-            if len(l6)>1:
-                index_dict[6] = l6
-            if len(l7)>1:
-                index_dict[7] = l7
-            if len(l8)>1:
-                index_dict[8] = l8
-            if len(l9)>1:
-                index_dict[9] = l9
+            # if len(l0)>1:
+            #     index_dict[0] = l0
+            # if len(l1)>1:
+            #     index_dict[1] = l1
+            # if len(l2)>1:
+            #     index_dict[2] = l2
+            # if len(l3)>1:
+            #     index_dict[3] = l3
+            # if len(l4)>1:
+            #     index_dict[4] = l4
+            # if len(l5)>1:
+            #     index_dict[5] = l5
+            # if len(l6)>1:
+            #     index_dict[6] = l6
+            # if len(l7)>1:
+            #     index_dict[7] = l7
+            # if len(l8)>1:
+            #     index_dict[8] = l8
+            # if len(l9)>1:
+            #     index_dict[9] = l9
 
-            # print('the length of label 1 is {}'.format(len(index_dict.keys())))
-            loss_dist = cdist(index_dict)
-            loss_reconstruction = loss_reconstruction/batch_size
-            loss = 0.3*loss_reconstruction + 0.7*loss_dist
+            # # print('the length of label 1 is {}'.format(len(index_dict.keys())))
+            # loss_dist = cdist(index_dict)
+            # loss_reconstruction = loss_reconstruction/batch_size
+            # loss = 0.3*loss_reconstruction + 0.7*loss_dist
+            loss = loss_reconstruction
 
             if not step % steps_til_summary:
-                print('in epoch {}, step {}, the loss is {}'.format(epoch, step, loss))  
-                print('the dist loss is {}'.format(loss_dist))
-                print('the reconstruction loss is {}'.format(loss_reconstruction))
+                print('in epoch {}, step {}, the loss is {}'.format(epoch, step, loss/batch_size))  
+                # print('the dist loss is {}'.format(loss_dist))
+                # print('the reconstruction loss is {}'.format(loss_reconstruction))
                 
 
             # index_start = index_end
@@ -553,6 +562,7 @@ def MNIST_test():
             plt.close('all')
 
         train_scheduler.step()
+        print('the learning rate is {}'.format(train_scheduler.get_last_lr()))
 
     state_dict = HyperNetEmbedd.state_dict()
     for k, v in state_dict.items():

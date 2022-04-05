@@ -8,10 +8,10 @@ from INR_test import Hyper_Net_Embedd, MNIST
 from Siren_meta import BatchLinear, Siren, get_mgrid, dict_to_gpu
 from torch.utils.data import DataLoader, Dataset
 import os
-from sklearn.datasets import fetch_mldata
+
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
-import seaborn as sns
+
 import pandas as pd
 
 
@@ -196,13 +196,13 @@ if __name__ == "__main__":
     dataset = MNIST(data_path)
     dataloader = DataLoader(dataset, batch_size=32, num_workers=0,shuffle=False)
 
-    hyper_in_features = 100
-    hyper_hidden_layers = 4
-    hyper_hidden_features = 300
+    hyper_in_features = 128
+    hyper_hidden_layers = 3
+    hyper_hidden_features = 1024
 
     in_features=2
-    hidden_features=128
-    hidden_layers=1
+    hidden_features=512
+    hidden_layers=0
     out_features=1
 
     img_siren = Siren(in_features=in_features, hidden_features=hidden_features, 
@@ -210,12 +210,13 @@ if __name__ == "__main__":
 
     HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
 
-    checkpoint = torch.load('./checkpoint3.pth')
+    checkpoint = torch.load('./checkpoint1.pth')
     HyperNetEmbedd.load_state_dict(checkpoint['model_state_dict'])
 
     X = []
     labels = []
-    for i in range(1000):
+    choice = np.random.randint(0,17000,1000)
+    for i in choice:
         i_t = torch.tensor(i)
         i_t_c = i_t.cuda()
         embedd = HyperNetEmbedd.get_embedd(index=i_t_c)
@@ -259,11 +260,11 @@ if __name__ == "__main__":
         plt.savefig(path,format='png')
         plt.cla()
     if use_ski:
-        pca = PCA(n_components=90)
+        pca = PCA(n_components=50)
         X_pca = pca.fit_transform(X) # randomly sample data to run quickly
 
         n_select = 10000 # reduce dimensionality with t-sne
-        tsne = TSNE(n_components=2, verbose=1, perplexity=50, n_iter=2000, learning_rate=100)
+        tsne = TSNE(n_components=2, verbose=1, perplexity=80, n_iter=2000, learning_rate=200)
         tsne_results = tsne.fit_transform(X_pca)# visualize
         df_tsne = pd.DataFrame(tsne_results, columns=['comp1', 'comp2'])
 
