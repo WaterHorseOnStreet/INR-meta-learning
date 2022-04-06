@@ -10,6 +10,7 @@ __pycache__/
 
 # Distribution / packaging
 data/
+model_saves/
 output/
 .Python
 build/
