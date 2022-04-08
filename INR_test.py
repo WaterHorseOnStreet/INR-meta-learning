@@ -180,6 +180,14 @@ class Hyper_Net_Embedd(nn.Module):
     def get_embedd(self,index):
         return self.embedd(index)
 
+    def embedd2inr(self,embedd):
+        params = OrderedDict()
+        z = embedd
+        for name, net, param_shape in zip(self.names, self.nets, self.param_shapes):
+            batch_param_shape = (-1,) + param_shape
+            params[name] = net(z).reshape(batch_param_shape)
+        return params
+
 class HyperNetwork(nn.Module):
     def __init__(self, hyper_in_features, hyper_hidden_layers, hyper_hidden_features, hypo_module, linear=False):
         '''
@@ -349,10 +357,13 @@ class MNIST():
         dataset = torchvision.datasets.MNIST(root=data_path, train=True,
                                                 download=False, transform=transform)
         self.dataset = dataset
-        idx_3 = dataset.targets==1
-        idx_8 = dataset.targets==8
-        self.dataset.data = dataset.data[idx_3]
-        self.dataset.targets = dataset.targets[idx_3]
+        idx = dataset.targets==3
+        idx2 = dataset.targets==8
+        idx3 = dataset.targets==4
+        idx += idx2
+        idx += idx3
+        self.dataset.data = dataset.data[idx]
+        self.dataset.targets = dataset.targets[idx]
         
         self.meshgrid = get_mgrid(sidelen=28)
     
@@ -385,7 +396,7 @@ def plot_sample_image(img_batch, ax):
     img = np.clip(img, 0., 1.)
     #print(img)
     ax.set_axis_off()
-    ax.imshow(img)
+    ax.imshow(img,cmap='Greys_r')
 
 def cdist(embedd_dict):
     cross_dist = 0.0
@@ -419,7 +430,7 @@ def MNIST_test():
     hyper_hidden_features = 1024
 
     in_features=2
-    hidden_features=1024
+    hidden_features=512
     hidden_layers=0
     out_features=1
 
@@ -432,14 +443,14 @@ def MNIST_test():
     HyperNetEmbedd.cuda()
 
     optim = torch.optim.Adam(lr=0.0001, params=HyperNetEmbedd.parameters())#,weight_decay=0.1,betas=(0.0, 0.9))
-    train_scheduler = torch.optim.lr_scheduler.StepLR(optim,2,gamma=0.5)
+    train_scheduler = torch.optim.lr_scheduler.StepLR(optim,10,gamma=0.5)
     steps_til_summary = 100
     log_dir = os.path.join(here, './output')
-    check_point_dir = os.path.join(here, './checkpoint1')
+    check_point_dir = os.path.join(here, './checkpoint8')
     writer = SummaryWriter(log_dir=log_dir)
     iteration = 0
 
-    for epoch in range(1,40):
+    for epoch in range(1,100):
         # index_start = 0
         # index_end = 0
         for step, sample in enumerate(dataloader):
@@ -450,9 +461,9 @@ def MNIST_test():
             # feats = np.arange(index_start,index_end,1)
             feats = sample['index']
             labels = sample['label']
-            keys = torch.unique(labels)
-            labels = labels.detach().cpu().numpy()
-            keys = keys.detach().cpu().numpy()
+            # keys = torch.unique(labels)
+            # labels = labels.detach().cpu().numpy()
+            # keys = keys.detach().cpu().numpy()
             #print(feats)
             #print(feats)
             # feats = feats.cuda()
@@ -569,8 +580,8 @@ def MNIST_test():
         #         plt.savefig(path,format='png')
         #         plt.cla()
         #     plt.close('all')
-
-        train_scheduler.step()
+        if(train_scheduler.get_last_lr()[0] > 1e-6):
+            train_scheduler.step()
         
         print('the learning rate is {}'.format(train_scheduler.get_last_lr()))
 

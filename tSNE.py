@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import argparse
 import torch
-from INR_test import Hyper_Net_Embedd, MNIST
+from INR_test import Hyper_Net_Embedd, MNIST, plot_sample_image
 from Siren_meta import BatchLinear, Siren, get_mgrid, dict_to_gpu
 from torch.utils.data import DataLoader, Dataset
 import os
@@ -188,6 +188,14 @@ def tsne(X, no_dims=2, initial_dims=50, perplexity=30.0):
     return Y
 
 
+def dist(input1,center):
+    avg_dist = 0.0
+    for i in range(input1.shape[0]):
+        dist = np.linalg.norm(input1[i] - center)
+        avg_dist += dist
+    avg_dist /= input1.shape[0]
+    return avg_dist
+
 if __name__ == "__main__":
     print("Run Y = tsne.tsne(X, no_dims, perplexity) to perform t-SNE on your dataset.")
 
@@ -196,28 +204,34 @@ if __name__ == "__main__":
     dataset = MNIST(data_path)
     dataloader = DataLoader(dataset, batch_size=32, num_workers=0,shuffle=False)
 
-    hyper_in_features = 100
-    hyper_hidden_layers = 4
-    hyper_hidden_features = 300
+    hyper_in_features = 128
+    hyper_hidden_layers = 3
+    hyper_hidden_features = 1024
 
     in_features=2
-    hidden_features=128
-    hidden_layers=1
+    hidden_features=512
+    hidden_layers=0
     out_features=1
 
+    from google_drive_downloader import GoogleDriveDownloader as gdd
+    gdd.download_file_from_google_drive(file_id='1ZXoDNzxUGsMCmQKTixcKHf0rHYYWTR1c',
+                                    dest_path='./checkpoint4.pth',
+                                    unzip=False)
+
     img_siren = Siren(in_features=in_features, hidden_features=hidden_features, 
-                        hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True).cuda()
+                        hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True)
 
-    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
+    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren)
 
-    checkpoint = torch.load('./checkpoint3.pth')
+    checkpoint = torch.load('./checkpoint5.pth')
     HyperNetEmbedd.load_state_dict(checkpoint['model_state_dict'])
+
 
     X = []
     labels = []
-    for i in range(1000):
+    for i in range(len(dataset)):
         i_t = torch.tensor(i)
-        i_t_c = i_t.cuda()
+        i_t_c = i_t
         embedd = HyperNetEmbedd.get_embedd(index=i_t_c)
         embedd = embedd.detach().cpu().numpy()
         X.append(embedd)
@@ -225,11 +239,85 @@ if __name__ == "__main__":
         labels.append(index['label'])
 
     X = np.asarray(X)
+    print(X.shape)
 
-    labels = [int(i) for i in labels]
+    labels = [int(i) for i in labels]    
+
+    indices_3 = []
+    indices_4 = []
+    indices_8 = []
+    for i, v in enumerate(labels):
+        if v == 3:
+            indices_3.append(i)
+        elif v == 4:
+            indices_4.append(i)
+        elif v == 8:
+            indices_8.append(i)
+        else:
+            continue
+
+    print(indices_3[:10])
+    print(indices_4[:10])
+    print(indices_8[:10])
+
+    embedd_3 = np.squeeze(X[indices_3,:])
+    embedd_4 = np.squeeze(X[indices_4,:])
+    embedd_8 = np.squeeze(X[indices_8,:])
+    # print(embedd_3[:2])
+    # print(embedd_4[:2])
+    # print(embedd_8[:2])
+
+
+    center_3 = np.mean(embedd_3,axis=0)
+    center_4 = np.mean(embedd_4,axis=0)
+    center_8 = np.mean(embedd_8,axis=0)
+    # print(center_3)
+    # print(center_4)
+    # print(center_8)
+
+    # print('var of 3 is {}'.format(np.var(embedd_3)))
+    # print('var of 4 is {}'.format(np.var(embedd_4)))
+    # print('var of 8 is {}'.format(np.var(embedd_8)))
+
+    # print('avg radius of 3 is {}'.format(dist(embedd_3,center_3)))
+    # print('avg radius of 4 is {}'.format(dist(embedd_4,center_4)))
+    # print('avg radius of 8 is {}'.format(dist(embedd_8,center_8)))
+
+    # print('distance 3 <----> 4 is {}'.format(np.linalg.norm(center_3 - center_4)))
+    # print('distance 3 <----> 8 is {}'.format(np.linalg.norm(center_3 - center_8)))
+    # print('distance 4 <----> 8 is {}'.format(np.linalg.norm(center_4 - center_8)))
+
+    inter = np.random.randint(0,embedd_3.shape[0],2)
+
+    meshgrid = get_mgrid(sidelen=28)
+    meshgrid = meshgrid.unsqueeze(0)
+    meshgrid = meshgrid
+    num = 20
+    with torch.no_grad():
+        embedd_3 = torch.tensor(embedd_3)
+        embedd_4 = torch.tensor(embedd_4)
+        embedd_8 = torch.tensor(embedd_8)
+
+        a = embedd_3[inter[0]]
+        b = embedd_3[inter[1]]
+        a = a.unsqueeze(0)
+        b = b.unsqueeze(0)
+        s = np.linspace(0,1,num)
+        for idx in range(num):
+            fig, axes = plt.subplots(1,1)
+            model_output = HyperNetEmbedd.embedd2inr(a+s[idx]*(b-a))
+            param = model_output
+            output = img_siren(meshgrid,params=param)
+            plot_sample_image(output, ax=axes)
+            axes.set_title(str(idx), fontsize=25)
+            path = os.path.join(here, './inference/{}.png'.format(idx))
+            plt.savefig(path,format='png')
+            plt.cla()
+        plt.close('all')
+
 
     use_torch = False
-    use_ski = True
+    use_ski = False
 
     if use_torch:
         X = torch.from_numpy(X)
