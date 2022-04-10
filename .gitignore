@@ -9,7 +9,10 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+inference/
+inference_twostage/
 data/
+model_saves/
 output/
 .Python
 build/

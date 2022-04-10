@@ -1,0 +1,26 @@
+n_latent_params: 100
+n_hidden: 300
+n_hidden_layers: 8
+output_size: 784
+layer_norm: False
+dropout: False
+activation_fn: relu
+model: ae
+kl: False
+sfm_transform: False
+
+
+n_train_epochs: 100
+batch_size: 32
+latent_param_init: normal
+n_test_epochs: 2
+test_batch_size: 32
+test_latent_param_init: normal
+
+net_lr: 0.0001
+latent_param_lr: 0.0001
+use_adam: True
+test_latent_param_lr: 0.001
+
+clean_y: True
+reduce: False

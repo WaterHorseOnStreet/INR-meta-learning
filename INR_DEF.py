@@ -1,7 +1,6 @@
 from math import gamma
-from random import random, sample
+from random import sample
 from tabnanny import verbose
-from scipy import rand
 # from turtle import forward
 import torch.nn.functional as F
 import datetime
@@ -113,7 +112,7 @@ class FCBlock(MetaModule):
         return self.net(input, params=self.get_subdict(params, 'net'))
 
 class Hyper_Net_Embedd(nn.Module):
-    def __init__(self, embedd_size, hyper_in_features, hyper_hidden_layers, hyper_hidden_features, hypo_module, linear=False):
+    def __init__(self, embedd_size, hyper_in_features, hyper_hidden_layers, hyper_hidden_features, hypo_module1, hypo_module2, linear=False):
         '''
 
         Args:
@@ -124,12 +123,18 @@ class Hyper_Net_Embedd(nn.Module):
         '''
         super().__init__()
 
-        hypo_parameters = hypo_module.meta_named_parameters()
+        hypo_parameters1 = hypo_module1.meta_named_parameters()
+        hypo_parameters2 = hypo_module2.meta_named_parameters()
 
         self.names = []
         self.nets = nn.ModuleList()
         self.param_shapes = []
         self.embedd = nn.Embedding(embedd_size,hyper_in_features)
+        hyper_in_features = int(hyper_in_features / 2)
+
+        self.names2 = []
+        self.nets2 = nn.ModuleList()
+        self.param_shapes2 = []
 
         # with h5py.File('./model_saves/final_latents.h5', 'r') as f:
         #     keys = list(f.keys())
@@ -138,7 +143,7 @@ class Hyper_Net_Embedd(nn.Module):
         #     print(data.shape)
         #     self.embedd.weight = torch.nn.Parameter(data)
 
-        for name, param in hypo_parameters:
+        for name, param in hypo_parameters1:
             print(name)
             self.names.append(name)
             self.param_shapes.append(param.size())
@@ -161,6 +166,29 @@ class Hyper_Net_Embedd(nn.Module):
                     hn.net[-1].apply(lambda m: hyper_bias_init(m))
             self.nets.append(hn)
 
+        for name, param in hypo_parameters2:
+            print(name)
+            self.names2.append(name)
+            self.param_shapes2.append(param.size())
+
+            if linear:
+                hn = BatchLinear(in_features=hyper_in_features,
+                                         out_features=int(torch.prod(torch.tensor(param.size()))),
+                                         bias=True)
+                if 'weight' in name:
+                    hn.apply(lambda m: hyper_weight_init(m, param.size()[-1]))
+                elif 'bias' in name:
+                    hn.apply(lambda m: hyper_bias_init(m))
+            else:
+                hn = FCBlock(in_features=hyper_in_features, out_features=int(torch.prod(torch.tensor(param.size()))),
+                                     num_hidden_layers=hyper_hidden_layers, hidden_ch=hyper_hidden_features,
+                                     outermost_linear=True, nonlinearity='relu')
+                if 'weight' in name:
+                    hn.net[-1].apply(lambda m: hyper_weight_init(m, param.size()[-1]))
+                elif 'bias' in name:
+                    hn.net[-1].apply(lambda m: hyper_bias_init(m))
+            self.nets2.append(hn)
+
     def forward(self, z):
         '''
         Args:
@@ -170,23 +198,37 @@ class Hyper_Net_Embedd(nn.Module):
             params: OrderedDict. Can be directly passed as the "params" parameter of a MetaModule.
         '''
         params = OrderedDict()
+        params2 = OrderedDict()
         z = self.embedd(z)
+        z1 = z[:,:64]
+        z2 = z[:,64:]
         for name, net, param_shape in zip(self.names, self.nets, self.param_shapes):
             batch_param_shape = (-1,) + param_shape
-            params[name] = net(z).reshape(batch_param_shape)
-        return z, params
+            params[name] = net(z1).reshape(batch_param_shape)
 
+        for name, net, param_shape in zip(self.names2, self.nets2, self.param_shapes2):
+            batch_param_shape = (-1,) + param_shape
+            params2[name] = net(z2).reshape(batch_param_shape)
+
+        return z, params, params2
 
     def get_embedd(self,index):
         return self.embedd(index)
 
     def embedd2inr(self,embedd):
         params = OrderedDict()
+        params2 = OrderedDict()
         z = embedd
         for name, net, param_shape in zip(self.names, self.nets, self.param_shapes):
             batch_param_shape = (-1,) + param_shape
             params[name] = net(z).reshape(batch_param_shape)
-        return params
+
+        for name, net, param_shape in zip(self.names2, self.nets2, self.param_shapes2):
+            batch_param_shape = (-1,) + param_shape
+            params2[name] = net(z).reshape(batch_param_shape)
+
+        return params, params2
+
 
 class HyperNetwork(nn.Module):
     def __init__(self, hyper_in_features, hyper_hidden_layers, hyper_hidden_features, hypo_module, linear=False):
@@ -333,11 +375,11 @@ class CIFAR10():
             [transforms.ToTensor(),
              transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
-        self.dataset = torchvision.datasets.CIFAR10(root=data_path, train=True,
+        dataset = torchvision.datasets.CIFAR10(root=data_path, train=True,
                                                 download=False, transform=transform)
         
         self.meshgrid = get_mgrid(sidelen=32)
-    
+
     def __len__(self):
         return len(self.dataset)
         
@@ -357,8 +399,7 @@ class MNIST():
         dataset = torchvision.datasets.MNIST(root=data_path, train=True,
                                                 download=False, transform=transform)
         self.dataset = dataset
-<<<<<<< HEAD
-=======
+
         idx = dataset.targets==3
         idx2 = dataset.targets==8
         idx3 = dataset.targets==4
@@ -367,15 +408,7 @@ class MNIST():
         self.dataset.data = dataset.data[idx]
         self.dataset.targets = dataset.targets[idx]
         
->>>>>>> 984e0bcb471cd152c6ee63f67b7119b465c40a11
         self.meshgrid = get_mgrid(sidelen=28)
-        idx = dataset.targets==3
-        idx2 = dataset.targets==8
-        idx3 = dataset.targets==4
-        idx += idx2
-        idx += idx3
-        self.dataset.data = dataset.data[idx]
-        self.dataset.targets = dataset.targets[idx]
     
     def __len__(self):
         return len(self.dataset)
@@ -446,17 +479,18 @@ def MNIST_test():
 
     img_siren = Siren(in_features=in_features, hidden_features=hidden_features, 
                         hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True)
+    img_siren2 = Siren(in_features=in_features, hidden_features=hidden_features, 
+                        hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True)
 
-    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren)
+    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren,img_siren2)
     # HyperNetEmbedd= nn.DataParallel(HyperNetEmbedd)
-    print(HyperNetEmbedd)
     HyperNetEmbedd.cuda()
 
     optim = torch.optim.Adam(lr=0.0001, params=HyperNetEmbedd.parameters())#,weight_decay=0.1,betas=(0.0, 0.9))
     train_scheduler = torch.optim.lr_scheduler.StepLR(optim,10,gamma=0.5)
     steps_til_summary = 100
     log_dir = os.path.join(here, './output')
-    check_point_dir = os.path.join(here, './checkpoint8')
+    check_point_dir = os.path.join(here, './checkpoint1')
     writer = SummaryWriter(log_dir=log_dir)
     iteration = 0
 
@@ -497,9 +531,12 @@ def MNIST_test():
                 continue
             for idx in range(len(feats)):
                 feat = feats[idx]
-                embedding, model_output = HyperNetEmbedd(feat.unsqueeze(0))
+                embedding, model_output,model_output2 = HyperNetEmbedd(feat.unsqueeze(0))
                 param = model_output
+                param2 = model_output2
                 output = img_siren(sample['context']['x'][idx],params=param)
+                output2 = img_siren(sample['context']['x'][idx],params=param2)
+                output += output2
                 loss_reconstruction += l2_loss(output,sample['context']['y'][idx]) 
                 # v_i = labels[idx]
                 # if v_i == 0:
@@ -546,24 +583,14 @@ def MNIST_test():
             # if len(l9)>1:
             #     index_dict[9] = l9
 
-<<<<<<< HEAD
-            # # print('the length of label 1 is {}'.format(len(index_dict.keys())))
-            # loss_dist = cdist(index_dict)
-            # loss_reconstruction = loss_reconstruction/batch_size
-=======
             # print('the length of label 1 is {}'.format(len(index_dict.keys())))
             # loss_dist = cdist(index_dict)
             loss_reconstruction = loss_reconstruction/batch_size
->>>>>>> 984e0bcb471cd152c6ee63f67b7119b465c40a11
             # loss = 0.3*loss_reconstruction + 0.7*loss_dist
             loss = loss_reconstruction
 
             if not step % steps_til_summary:
-<<<<<<< HEAD
-                print('in epoch {}, step {}, the loss is {}'.format(epoch, step, loss/batch_size))  
-=======
                 print('in epoch {}, step {}, the loss is {}'.format(epoch, step, loss))  
->>>>>>> 984e0bcb471cd152c6ee63f67b7119b465c40a11
                 # print('the dist loss is {}'.format(loss_dist))
                 # print('the reconstruction loss is {}'.format(loss_reconstruction))
                 
@@ -576,7 +603,6 @@ def MNIST_test():
             iteration += 1
 
             writer.add_scalar('Loss/train', loss, iteration)
-            
 
         # meshgrid = get_mgrid(sidelen=28)
         # meshgrid = meshgrid.unsqueeze(0)
@@ -600,15 +626,12 @@ def MNIST_test():
         #         plt.savefig(path,format='png')
         #         plt.cla()
         #     plt.close('all')
-        if(train_scheduler.get_last_lr()[0] > 1e-6):
-            train_scheduler.step()
-        
-        print('the learning rate is {}'.format(train_scheduler.get_last_lr()))
 
-        # indices = np.random.randint(0,len(dataset),size=200)
+        train_scheduler.step()
+        print('the learning rate is {}'.format(train_scheduler.get_last_lr()))
         # with torch.no_grad():
         #     X = []
-        #     for i in indices:
+        #     for i in range(len(dataset)):
         #         i_t = torch.tensor(i)
         #         i_t_c = i_t.cuda()
         #         embedd = HyperNetEmbedd.get_embedd(index=i_t_c)
@@ -616,15 +639,9 @@ def MNIST_test():
         #     X = torch.stack(X,dim=0)
         #     print(X.shape)
 
-<<<<<<< HEAD
-        train_scheduler.step()
-        print('the learning rate is {}'.format(train_scheduler.get_last_lr()))
-=======
         #     dist1 = dist(X,X)
         #     print('the dist is {}'.format(dist1))
-
         #     writer.add_scalar('distance', dist1, epoch)
->>>>>>> 984e0bcb471cd152c6ee63f67b7119b465c40a11
 
     state_dict = HyperNetEmbedd.state_dict()
     for k, v in state_dict.items():
@@ -664,7 +681,7 @@ def main():
     HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
 
     optim = torch.optim.Adam(lr=1e-4, params=HyperNetEmbedd.parameters())
-    train_scheduler = torch.optim.lr_scheduler.StepLR(optim,5,gamma=0.1)
+    train_scheduler = torch.optim.lr_scheduler.StepLR(optim,10,gamma=0.1)
     steps_til_summary = 100
     log_dir = os.path.join(here, './output')
     writer = SummaryWriter(log_dir=log_dir)
