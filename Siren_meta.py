@@ -130,7 +130,7 @@ class Siren(MetaModule):
                                              np.sqrt(6 / hidden_features) / 30.)
             self.net.append(final_linear)
         else:
-            self.net.append(layer(hidden_features, out_features, is_first=False, omega_0=hidden_omega_0))
+            self.net.append(layer(hidden_features, out_features))
 
         self.net = nn.ModuleList(self.net)
 
@@ -139,6 +139,36 @@ class Siren(MetaModule):
 
         for i, layer in enumerate(self.net):
             x = layer(x, params=self.get_subdict(params, f'net.{i}'))
+
+        return x
+
+class SpatialT(MetaModule):
+    def __init__(self,hidden_features,in_features=2,out_features=2,bias=True):
+        super().__init__()
+
+        self.in_features = in_features
+        self.net = []
+
+        layer1 = BatchLinear(in_features, hidden_features, bias=bias)
+        layer2 = BatchLinear(hidden_features, out_features, bias=bias)
+
+        with torch.no_grad():
+            layer1.weight.uniform_(-1 / self.in_features,
+                                        1 / self.in_features)
+            layer2.weight.uniform_(-1 / self.in_features,
+                                        1 / self.in_features)
+
+        self.net.append(layer1)
+        self.net.append(layer2)
+        self.net = nn.ModuleList(self.net)
+
+    def forward(self, input, params=None):
+        x = input
+
+        for i, layer in enumerate(self.net):
+            x = layer(x, params=self.get_subdict(params, f'net.{i}'))
+            if i == 0:
+                x = torch.sigmoid(x)
 
         return x
 

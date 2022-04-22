@@ -483,7 +483,7 @@ class PixelNormalize(nn.Module):
     def forward(self, x):
         return F.normalize(x,dim=1)
 
-class Discriminator(nn.Module):
+class DiscriminatorStyle(nn.Module):
     def __init__(self,in_channles,resolution,label_size,channel_table,num_layers=18):
         super().__init__()
 
@@ -532,8 +532,9 @@ class MappingNetwork(nn.Module):
         layers = []
         self.dim = out_dim
         self.num_layers = num_layers
-
-        self.mix_label = FCNBlock(in_dim=label_dim,out_dim=in_dim)
+        self.label_dim = label_dim
+        if self.label_dim is not None:
+            self.mix_label = FCNBlock(in_dim=label_dim,out_dim=in_dim)
 
         layers.append(PixelNormalize())
         for i in range(num_layers):
@@ -547,13 +548,14 @@ class MappingNetwork(nn.Module):
         self.layers = nn.Sequential(*layers)
 
     def forward(self, latent, label):
-        label = self.mix_label(label)
         latent = self.layers(latent)
-        latent = torch.stack([latent,label],dim=0)
+        if self.label_dim is not None:
+            label = self.mix_label(label)
+            latent = torch.stack([latent,label],dim=0)
         return latent
 
 class SyntheticNet(nn.Module):
-    def __init__(self,in_dim,out_channel,channel_table,num_layers=18):
+    def __init__(self,in_dim,out_channel,channel_table,num_layers=14):
         super().__init__()
 
         self.in_channels = in_dim
@@ -563,13 +565,17 @@ class SyntheticNet(nn.Module):
         for layer_idx in range(self.styles):
             if layer_idx == 0:
                 layers.append(self.build_StyleAdder(self.in_channels,self.in_channels*2,layer_idx))
+                layers.append(self.build_NoiseAdder(self.in_channels))
                 layers.append(self.build_synthetic_block(layer_idx))
                 layers.append(self.build_StyleAdder(self.in_channels,self.in_channels*2,2*layer_idx+1))
+                layers.append(self.build_NoiseAdder(self.in_channels))
             else:
                 layers.append(self.build_synthetic_block(layer_idx,up_sample=True))
-                layers.append(self.build_StyleAdder(self.in_channels,self.channel_table[layer_idx]*2,layer_idx))                
+                layers.append(self.build_StyleAdder(self.in_channels,self.channel_table[layer_idx]*2,layer_idx))   
+                layers.append(self.build_NoiseAdder(self.channel_table[layer_idx]))             
                 layers.append(self.build_synthetic_block(layer_idx))
                 layers.append(self.build_StyleAdder(self.in_channels,self.channel_table[layer_idx]*2,2*layer_idx+1))      
+                layers.append(self.build_NoiseAdder(self.channel_table[layer_idx]))  
 
         layers.append(nn.Conv2d(self.channel_table[-1],3,kernel_size=1)) 
         self.model = TwoInputSequential(*layers)
@@ -597,6 +603,8 @@ class SyntheticNet(nn.Module):
 
     def build_StyleAdder(self,in_channels,out_channels,layer_idx):
         return StyleAdder(in_channels,out_channels,layer_idx)
+    def build_NoiseAdder(self,dim):
+        return NoiseAdder(dim)
 
 class StyleAdder(TwoInputModule):
     def __init__(self,in_dim,out_dim,layer_idx):
@@ -613,4 +621,17 @@ class StyleAdder(TwoInputModule):
         latent = latent.contiguous()
         result = latent[:,self.idx].reshape([-1, 2, x.shape[1]] + [1] * (len(x.shape) - 2))       
         return x*result[:,0] + result[:,1]
+
+class NoiseAdder(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+        self.noise_weights = nn.Parameter(torch.zeros(1,dim,1,1))
         
+
+    def forward(self,x):
+        # if not x.shape[1] == latent.shape[-1]:
+        #     print('latent shape and input shape does not match, please check')
+        self.noise = nn.Parameter(torch.normal(mean=0.0,std=1.0,size=(x.shape[0],1,x.shape[2],x.shape[3])),requires_grad=False).cuda()
+        
+        return x + self.noise*self.noise_weights

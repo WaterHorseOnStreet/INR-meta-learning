@@ -204,8 +204,8 @@ if __name__ == "__main__":
     dataset = MNIST(data_path)
     dataloader = DataLoader(dataset, batch_size=32, num_workers=0,shuffle=False)
 
-    hyper_in_features = 128
-    hyper_hidden_layers = 3
+    hyper_in_features = 64
+    hyper_hidden_layers = 1
     hyper_hidden_features = 1024
 
     in_features=2
@@ -223,22 +223,14 @@ if __name__ == "__main__":
 
     HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren)
 
-<<<<<<< HEAD
-    checkpoint = torch.load('./checkpoint1.pth')
-=======
-    checkpoint = torch.load('./checkpoint5.pth')
->>>>>>> 984e0bcb471cd152c6ee63f67b7119b465c40a11
+    checkpoint = torch.load('./checkpoint9.pth')
     HyperNetEmbedd.load_state_dict(checkpoint['model_state_dict'])
 
 
     X = []
     labels = []
-<<<<<<< HEAD
     choice = np.random.randint(0,17000,1000)
     for i in choice:
-=======
-    for i in range(len(dataset)):
->>>>>>> 984e0bcb471cd152c6ee63f67b7119b465c40a11
         i_t = torch.tensor(i)
         i_t_c = i_t
         embedd = HyperNetEmbedd.get_embedd(index=i_t_c)
@@ -284,17 +276,17 @@ if __name__ == "__main__":
     # print(center_4)
     # print(center_8)
 
-    # print('var of 3 is {}'.format(np.var(embedd_3)))
-    # print('var of 4 is {}'.format(np.var(embedd_4)))
-    # print('var of 8 is {}'.format(np.var(embedd_8)))
+    print('var of 3 is {}'.format(np.var(embedd_3)))
+    print('var of 4 is {}'.format(np.var(embedd_4)))
+    print('var of 8 is {}'.format(np.var(embedd_8)))
 
-    # print('avg radius of 3 is {}'.format(dist(embedd_3,center_3)))
-    # print('avg radius of 4 is {}'.format(dist(embedd_4,center_4)))
-    # print('avg radius of 8 is {}'.format(dist(embedd_8,center_8)))
+    print('avg radius of 3 is {}'.format(dist(embedd_3,center_3)))
+    print('avg radius of 4 is {}'.format(dist(embedd_4,center_4)))
+    print('avg radius of 8 is {}'.format(dist(embedd_8,center_8)))
 
-    # print('distance 3 <----> 4 is {}'.format(np.linalg.norm(center_3 - center_4)))
-    # print('distance 3 <----> 8 is {}'.format(np.linalg.norm(center_3 - center_8)))
-    # print('distance 4 <----> 8 is {}'.format(np.linalg.norm(center_4 - center_8)))
+    print('distance 3 <----> 4 is {}'.format(np.linalg.norm(center_3 - center_4)))
+    print('distance 3 <----> 8 is {}'.format(np.linalg.norm(center_3 - center_8)))
+    print('distance 4 <----> 8 is {}'.format(np.linalg.norm(center_4 - center_8)))
 
     inter = np.random.randint(0,embedd_3.shape[0],2)
 
@@ -326,7 +318,7 @@ if __name__ == "__main__":
 
 
     use_torch = False
-    use_ski = False
+    use_ski = True
 
     if use_torch:
         X = torch.from_numpy(X)

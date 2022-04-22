@@ -1,4 +1,9 @@
+from cProfile import label
 import imp
+# from turtle import forward
+# from tkinter import Image
+from PIL import Image
+from matplotlib.pyplot import xcorr
 from modules import MergeModule, CondInstanceNorm,CINResnetBlock,ResnetBlock_unbalance
 import numpy as np
 import torch
@@ -9,221 +14,61 @@ import torchvision
 from Kitti import Kitti
 from BDD import BDDDataset
 import torch.nn as nn
+import torchvision.transforms as T
 
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+# def count_parameters(model):
+#     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
-# latent_dim = 100
-# input_dim = 3
-# output_dim = 10
-# ConstNorm1 = CondInstanceNorm(input_dim,latent_dim)
-# input_feat = torch.rand([2,3,224,224])
-# latent_feat = torch.rand([2,100,224,224])
-# # print(ConstNorm1(input_feat,latent_feat).shape)
-# CRes = CINResnetBlock(input_dim, latent_dim)
-# unbanl_resnet = ResnetBlock_unbalance(input_dim, latent_dim)
-class OverlapPatchEmbed(nn.Module):
-    """Image to Patch Embedding."""
+# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+# os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+latent_dim = 100
+input_dim = 3
+output_dim = 10
+ConstNorm1 = CondInstanceNorm(input_dim,latent_dim)
+input_feat = torch.rand([32,3,256,256])
+latent_feat = torch.rand([2,100,224,224])
+# # # print(ConstNorm1(input_feat,latent_feat).shape)
+# # CRes = CINResnetBlock(input_dim, latent_dim)
+# # unbanl_resnet = ResnetBlock_unbalance(input_dim, latent_dim)
 
-    def __init__(self,
-                 img_size=224,
-                 patch_size=7,
-                 stride=4,
-                 in_chans=3,
-                 embed_dim=768):
-        super().__init__()
-        img_size = (img_size,img_size)
-        patch_size = (patch_size,patch_size)
+from style_GAN_models import MixVisionTransformer
+MVit = MixVisionTransformer(img_size=256)
+
+class MyGenerator(nn.Module):
+    def __init__(self,img_size):
+        super(MyGenerator, self).__init__()
 
         self.img_size = img_size
-        self.patch_size = patch_size
-        self.H, self.W = img_size[0] // patch_size[0], img_size[
-            1] // patch_size[1]
-        self.num_patches = self.H * self.W
-        self.proj = nn.Conv2d(
-            in_chans,
-            embed_dim,
-            kernel_size=patch_size,
-            stride=stride,
-            padding=(patch_size[0] // 2, patch_size[1] // 2))
-        self.norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, x):
-        x = self.proj(x)
-        _, _, H, W = x.shape
-        x = x.flatten(2).transpose(1, 2).contiguous()
-        x = self.norm(x)
+        channel_table = []
+        self.latent_dim = 512
+        fmap_base = 8192
+        for i in range(1,8):
+            channel_table.append(min(int(fmap_base / (2.0 ** (i * 1))), latent_dim))
 
-        return x, H, W
+        self.channel_table = channel_table
+        self.MixViT = MixVisionTransformer(img_size=self.img_size)
+        self.Synthetic = SyntheticNet(in_dim=self.latent_dim,out_channel=2*self.latent_dim,channel_table=self.channel_table )
+        self.input_tensor = torch.rand([1,512,4,4])
 
-class Attention(nn.Module):
+    def forward(self,x):
+        result = self.MixViT(x.float())
+        result = torch.cat(result,dim=1)
+        result = self.Synthetic(self.input_tensor,result)
 
-    def __init__(self,
-                 dim,
-                 num_heads=8,
-                 qkv_bias=False,
-                 qk_scale=None,
-                 attn_drop=0.,
-                 proj_drop=0.,
-                 sr_ratio=1):
-        super().__init__()
-        assert dim % num_heads == 0, f'dim {dim} should be divided by ' \
-                                     f'num_heads {num_heads}.'
+        return result.float()
 
-        self.dim = dim
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim**-0.5
-
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-        self.sr_ratio = sr_ratio
-        if sr_ratio > 1:
-            self.sr = nn.Conv2d(
-                dim, dim, kernel_size=sr_ratio, stride=sr_ratio)
-            self.norm = nn.LayerNorm(dim)
-
-    def forward(self, x, H, W):
-        B, N, C = x.shape
-        q = self.q(x).reshape(B, N, self.num_heads,
-                              C // self.num_heads).permute(0, 2, 1,
-                                                           3).contiguous()
-        
-
-        if self.sr_ratio > 1:
-            x_ = x.permute(0, 2, 1).contiguous().reshape(B, C, H, W)
-            x_ = self.sr(x_).reshape(B, C, -1).permute(0, 2, 1).contiguous()
-            x_ = self.norm(x_)
-            kv = self.kv(x_).reshape(B, -1, 2, self.num_heads,
-                                     C // self.num_heads).permute(
-                                         2, 0, 3, 1, 4).contiguous()
-        else:
-            kv = self.kv(x).reshape(B, -1, 2, self.num_heads,
-                                    C // self.num_heads).permute(
-                                        2, 0, 3, 1, 4).contiguous()
-
-        k, v = kv[0], kv[1]
-
-        attn = (q @ k.transpose(-2, -1).contiguous()) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-        
-
-        x = (attn @ v).transpose(1, 2).contiguous().reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-
-        return x
-
-class DWConv(nn.Module):
-
-    def __init__(self, dim=768):
-        super(DWConv, self).__init__()
-        self.dwconv = nn.Conv2d(dim, dim, 3, 1, 1, bias=True, groups=dim)
-
-    def forward(self, x, H, W):
-        B, N, C = x.shape
-        x = x.transpose(1, 2).contiguous().view(B, C, H, W)
-        x = self.dwconv(x)
-        x = x.flatten(2).transpose(1, 2).contiguous()
-
-        return x
-
-class Mlp(nn.Module):
-
-    def __init__(self,
-                 in_features,
-                 hidden_features=None,
-                 out_features=None,
-                 act_layer=nn.GELU,
-                 drop=0.):
-        super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.dwconv = DWConv(hidden_features)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
-
-    def forward(self, x, H, W):
-        x = self.fc1(x)
-        x = self.dwconv(x, H, W)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
-        return x
-
-class Block(nn.Module):
-
-    def __init__(self,
-                 dim,
-                 num_heads,
-                 mlp_ratio=4.,
-                 qkv_bias=False,
-                 qk_scale=None,
-                 drop=0.,
-                 attn_drop=0.,
-                 drop_path=0.,
-                 act_layer=nn.GELU,
-                 norm_layer=nn.LayerNorm,
-                 sr_ratio=1):
-        super().__init__()
-        self.norm1 = norm_layer(dim)
-        self.attn = Attention(
-            dim,
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            attn_drop=attn_drop,
-            proj_drop=drop,
-            sr_ratio=sr_ratio)
-        # NOTE: drop path for stochastic depth, we shall see if this is better
-        # than dropout here
-        self.drop_path = nn.Identity()
-        self.norm2 = norm_layer(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(
-            in_features=dim,
-            hidden_features=mlp_hidden_dim,
-            act_layer=act_layer,
-            drop=drop)
-
-    def forward(self, x, H, W):
-        x = x + self.drop_path(self.attn(self.norm1(x), H, W))
-        x = x + self.drop_path(self.mlp(self.norm2(x), H, W))
-
-        return x
-
-
-NN = OverlapPatchEmbed()
-sample = torch.rand([32,3,224,224])
-result = NN(sample)
-print(result[0].shape)
-Atten = Block(dim=result[0].shape[-1],num_heads=8)
-print(Atten)
-ATT_result = Atten(result[0],result[1],result[2])
-print(ATT_result.shape)
-
-# batch_size = 32
-# latent_dim = 512
-# label_dim = 512
+batch_size = 32
+latent_dim = 512
+label_dim = 512
 # # label_feat = torch.rand([batch_size,label_dim])
 # # latent_feat = torch.rand([batch_size,latent_dim])
 # # MNet = MappingNetwork(latent_dim,300,100,label_dim=label_dim)
 # # result = MNet(latent_feat,label_feat)
 # # print(result.shape)
-# channel = 18
+channel = 18
 
 # x = torch.rand([batch_size,100,latent_dim,latent_dim])
-
 # SD = StyleAdder(latent_dim,2*latent_dim)
 # result = SD(latent_feat)
 # print(result.shape)
@@ -232,28 +77,35 @@ print(ATT_result.shape)
 # print(result[:,0].shape)
 # x = x*result[:,0] + result[:,1]
 
-# here = os.getcwd()
+# transform = T.ToPILImage()
+# image = Image.open('./1.png')
+# image = image.resize((256,256))
+# image = torch.tensor(np.array(image).astype(np.uint8).transpose(2,0,1)[:3,:,:]).unsqueeze(0)
+# print(image.shape)
+# img1 = transform(image[0,:,:,:])
+# img1.save('test1.png')
 
-# kitti_path = os.path.join(here,'../../../dataset/kitti/')
-
-# kitti = Kitti(root=kitti_path)
-# print(next(iter(kitti)))
-
-# cityscapes_path = os.path.join(here,'../../../dataset/cityscapes')
-# Cityscapes_dataset = torchvision.datasets.Cityscapes(root=cityscapes_path, split='train', mode='fine',target_type='semantic')
-# print(next(iter(Cityscapes_dataset)))
+# print(type(image))
+# result = MVit(image.float())
+# result = torch.cat(result,dim=1)
 
 # channel_table = []
 # fmap_base = 8192
-# for i in range(1,10):
+# for i in range(1,8):
 #     channel_table.append(min(int(fmap_base / (2.0 ** (i * 1))), latent_dim))
 # print(channel_table)
 # latent_feat = torch.rand([batch_size,channel,latent_dim])
-# input_tensor = torch.rand([batch_size,latent_dim,4,4])
+# input_tensor = torch.rand([batch_size,latent_dim,4,4]) # input of synthetic network is a constant tensor
 # SN = SyntheticNet(in_dim=latent_dim,out_channel=2*latent_dim,channel_table=channel_table)
-# print(SN)
-# result = SN(input_tensor,latent_feat)
+# # print(SN)
+# result = SN(input_tensor,result)
 # print(result.shape)
+# img2 = transform(result[0,:,:,:])
+# img2.save('test2.png')
+
+
+
+
 
 # channel_table = channel_table[::-1]
 # print(channel_table)
@@ -261,6 +113,67 @@ print(ATT_result.shape)
 # DD = Discriminator(in_channels,result.shape[-1],latent_dim,channel_table=channel_table)
 # result_D = DD(result)
 # print(result_D.shape)
+
+
+
+# here = os.getcwd()
+# kitti_path = os.path.join(here,'../../../dataset/kitti/')
+# kitti = Kitti(root=kitti_path)
+# print(next(iter(kitti)))
+
+# cityscapes_path = os.path.join(here,'../../../dataset/cityscapes')
+# Cityscapes_dataset = torchvision.datasets.Cityscapes(root=cityscapes_path, split='train', mode='fine',target_type='semantic')
+# sample,img = Cityscapes_dataset[40]
+# img = np.array(img)
+# sample = np.array(sample)
+# print(np.unique(np.array(img)))
+# id = 26
+# mask = img == id
+# R = np.where(img == id,sample[:,:,0],0)
+# print(R.shape)
+# G = np.where(img == id,sample[:,:,1],0)
+# print(G.shape)
+# B = np.where(img == id,sample[:,:,2],0)
+# A = np.ones_like(R)*255
+# pos = np.where(mask)
+# x_min = np.min(pos[1])
+# x_max = np.max(pos[1])
+
+# y_min = np.min(pos[0])
+# y_max = np.max(pos[0])
+# print((x_min,y_min,x_max,y_max))
+# image = Image.fromarray(np.stack((R,G,B,A)).transpose(1,2,0))
+# image = image.crop((x_min,y_min,x_max,y_max))
+# image.save('1.png')
+# print(img.shape)
+
+# image = Image.fromarray(sample)
+# image.save('2.png')
+# print(img.shape)
+
+
+# sample = np.array(sample)
+# semantic = np.array(img[0])
+# color = np.array(img[1])
+# print(np.unique(semantic))
+# masks = semantic == 33
+# print(np.sum(masks))
+# mask = np.unique(masks)
+# print(mask)
+# for i in range(masks.shape[0]):
+#     for j in range(masks.shape[1]):
+#         if color[i,j,0] != 64 or color[i,j,1] != 0 or color[i,j,2] != 128:
+#             sample[i,j,:] = [0,0,0]
+
+# print(np.sum(sample))
+# print(np.unique(sample))
+
+# img1 = sample.astype(np.uint8)
+# image = Image.fromarray(img1)
+# image.save('1.png')
+# print(img1.shape)
+
+
 
 
 

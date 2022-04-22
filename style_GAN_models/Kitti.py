@@ -76,7 +76,8 @@ class Kitti(VisionDataset):
         if self.train:
             labels_dir = os.path.join(self._raw_folder, self._location, self.labels_dir_name)
         for img_file in os.listdir(image_dir):
-            self.images.append(os.path.join(image_dir, img_file))
+            if img_file.endswith('.png'):
+                self.images.append(os.path.join(image_dir, img_file))
             if self.train:
                 self.targets.append(os.path.join(labels_dir, f"{img_file.split('.')[0]}.txt"))
 

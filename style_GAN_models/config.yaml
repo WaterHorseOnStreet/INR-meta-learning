@@ -1,0 +1,4 @@
+dataset_name: 'test'
+checkpoint_interval: 5
+sample_interval: 2000
+n_epochs: 10

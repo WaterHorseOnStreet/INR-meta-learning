@@ -11,7 +11,7 @@ from torch import dtype, nn
 from torchmeta.modules import (MetaModule, MetaSequential)
 from collections import OrderedDict
 import numpy as np
-from Siren_meta import BatchLinear, Siren, get_mgrid
+from Siren_meta import BatchLinear, Siren, get_mgrid, SpatialT
 import torchvision
 from torchvision import transforms
 import os
@@ -479,10 +479,10 @@ def MNIST_test():
 
     img_siren = Siren(in_features=in_features, hidden_features=hidden_features, 
                         hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True)
-    img_siren2 = Siren(in_features=in_features, hidden_features=hidden_features, 
-                        hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True)
 
-    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren,img_siren2)
+    spatial_t = SpatialT(hidden_features=300)
+
+    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren,spatial_t)
     # HyperNetEmbedd= nn.DataParallel(HyperNetEmbedd)
     HyperNetEmbedd.cuda()
 
@@ -534,9 +534,9 @@ def MNIST_test():
                 embedding, model_output,model_output2 = HyperNetEmbedd(feat.unsqueeze(0))
                 param = model_output
                 param2 = model_output2
-                output = img_siren(sample['context']['x'][idx],params=param)
-                output2 = img_siren(sample['context']['x'][idx],params=param2)
-                output += output2
+                output = spatial_t(sample['context']['x'][idx],params=param2)
+                output = img_siren(output,params=param)
+
                 loss_reconstruction += l2_loss(output,sample['context']['y'][idx]) 
                 # v_i = labels[idx]
                 # if v_i == 0:

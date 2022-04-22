@@ -1,7 +1,6 @@
 from math import gamma
-from random import random, sample
+from random import sample
 from tabnanny import verbose
-from scipy import rand
 # from turtle import forward
 import torch.nn.functional as F
 import datetime
@@ -16,11 +15,13 @@ from Siren_meta import BatchLinear, Siren, get_mgrid, SpatialT
 import torchvision
 from torchvision import transforms
 import os
-from scipy import ndimage
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 import h5py
+import math
+from copy import deepcopy
 
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 def dict_to_gpu(ob):
     if isinstance(ob, Mapping):
         return {k: dict_to_gpu(v) for k, v in ob.items()}
@@ -44,6 +45,8 @@ def hyper_weight_init(m, in_features_main_net):
         with torch.no_grad():
             m.bias.zero_()
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def hyper_bias_init(m):
     if hasattr(m, 'weight'):
@@ -113,8 +116,48 @@ class FCBlock(MetaModule):
     def forward(self, input, params=None):
         return self.net(input, params=self.get_subdict(params, 'net'))
 
+
+
+class GraphFeatureMap_Manifold(nn.Module):    
+    def __init__(self, in_features, out_features, nonlinear="LeakySoftPlus",bias=True):        
+        super(GraphFeatureMap_Manifold, self).__init__()        
+        assert nonlinear in ['LeakyReLU','LeakySoftPlus']        
+        self.nonlinear = nonlinear        
+        self.in_features = in_features        
+        self.out_features = out_features        
+        self.weight = nn.Parameter(torch.FloatTensor(in_features, out_features))        
+        self.register_parameter('weight',self.weight)        
+        if bias:            
+            self.bias = nn.Parameter(torch.FloatTensor(out_features))            
+            self.register_parameter('bias',self.bias)        
+        else:            
+            self.register_parameter('bias', None)        
+            self.reset_parameters()
+    def reset_parameters(self):        
+        stdv = 1. / math.sqrt(self.weight.size(1))        
+        self.weight.data.uniform_(-stdv, stdv)        
+        if self.bias is not None:            
+            self.bias.data.uniform_(-stdv, stdv)
+    def forward(self, input):        
+        output = torch.mm(input, self.weight)        
+        if self.bias is not None:            
+            output = output + self.bias        
+        else:            
+            output = output        
+        if self.nonlinear == "LeakyReLU":            
+            output = F.leaky_relu(output,negative_slope=1)        
+        if self.nonlinear == "LeakySoftPlus":            
+            output = F.softplus(output)+output;        
+        if self.bias is not None:            
+            output = output - self.bias        
+        else:            
+            output = output      
+        #pseudo_inverse = torch.mm( torch.t(self.weight), torch.inverse( torch.mm(self.weight,torch.t(self.weight)) )  )  
+        output = torch.mm(output,torch.linalg.pinv(self.weight))   
+        return output
+
 class Hyper_Net_Embedd(nn.Module):
-    def __init__(self, embedd_size, hyper_in_features, hyper_hidden_layers, hyper_hidden_features, hypo_module, linear=False):
+    def __init__(self, embedd_size, hyper_in_features, hyper_hidden_layers, hyper_hidden_features, hypo_module, GM, linear=False):
         '''
 
         Args:
@@ -130,7 +173,9 @@ class Hyper_Net_Embedd(nn.Module):
         self.names = []
         self.nets = nn.ModuleList()
         self.param_shapes = []
-        self.embedd = nn.Embedding(embedd_size,hyper_in_features)
+        self.embedd_size = embedd_size
+        self.embedd = []
+        self.GM = GM
 
         # with h5py.File('./model_saves/final_latents.h5', 'r') as f:
         #     keys = list(f.keys())
@@ -162,6 +207,8 @@ class Hyper_Net_Embedd(nn.Module):
                     hn.net[-1].apply(lambda m: hyper_bias_init(m))
             self.nets.append(hn)
 
+        self.meshgrid = get_mgrid(sidelen=28)
+        self.init_embedd(GM)
     def forward(self, z):
         '''
         Args:
@@ -171,15 +218,36 @@ class Hyper_Net_Embedd(nn.Module):
             params: OrderedDict. Can be directly passed as the "params" parameter of a MetaModule.
         '''
         params = OrderedDict()
-        z = self.embedd(z)
+        z = torch.from_numpy(self.embedd[z]).cuda()
         for name, net, param_shape in zip(self.names, self.nets, self.param_shapes):
             batch_param_shape = (-1,) + param_shape
             params[name] = net(z).reshape(batch_param_shape)
         return z, params
 
+    def set_embedd(self,GM,idx):
+        params = []
+        for param in GM.parameters():
+            params.append(param)
+
+        self.embedd[idx] = params[0].reshape(1,64).detach().cpu().numpy()
+
+    def set_GM(self,GM,idx):
+        #print(self.embedd[:10])
+        for name,param in GM.named_parameters():
+            if 'weight' in name:
+                param.data = torch.nn.parameter.Parameter(torch.from_numpy(self.embedd[idx]).cuda().reshape(2,32),requires_grad=True)
+
+    def init_embedd(self,GM):
+        params = []
+        for param in GM.parameters():
+            params.append(param)
+
+        for i in range(self.embedd_size):
+            self.embedd.append(params[0].reshape(1,64).detach().cpu().numpy())
+
 
     def get_embedd(self,index):
-        return self.embedd(index)
+        return self.embedd[index]
 
     def embedd2inr(self,embedd):
         params = OrderedDict()
@@ -188,145 +256,6 @@ class Hyper_Net_Embedd(nn.Module):
             batch_param_shape = (-1,) + param_shape
             params[name] = net(z).reshape(batch_param_shape)
         return params
-
-class HyperNetwork(nn.Module):
-    def __init__(self, hyper_in_features, hyper_hidden_layers, hyper_hidden_features, hypo_module, linear=False):
-        '''
-
-        Args:
-            hyper_in_features: In features of hypernetwork
-            hyper_hidden_layers: Number of hidden layers in hypernetwork
-            hyper_hidden_features: Number of hidden units in hypernetwork
-            hypo_module: MetaModule. The module whose parameters are predicted.
-        '''
-        super().__init__()
-
-        hypo_parameters = hypo_module.meta_named_parameters()
-
-        self.names = []
-        self.nets = nn.ModuleList()
-        self.param_shapes = []
-        for name, param in hypo_parameters:
-            print(name)
-            self.names.append(name)
-            self.param_shapes.append(param.size())
-
-            if linear:
-                hn = BatchLinear(in_features=hyper_in_features,
-                                         out_features=int(torch.prod(torch.tensor(param.size()))),
-                                         bias=True)
-                if 'weight' in name:
-                    hn.apply(lambda m: hyper_weight_init(m, param.size()[-1]))
-                elif 'bias' in name:
-                    hn.apply(lambda m: hyper_bias_init(m))
-            else:
-                hn = FCBlock(in_features=hyper_in_features, out_features=int(torch.prod(torch.tensor(param.size()))),
-                                     num_hidden_layers=hyper_hidden_layers, hidden_ch=hyper_hidden_features,
-                                     outermost_linear=True, nonlinearity='relu')
-                if 'weight' in name:
-                    hn.net[-1].apply(lambda m: hyper_weight_init(m, param.size()[-1]))
-                elif 'bias' in name:
-                    hn.net[-1].apply(lambda m: hyper_bias_init(m))
-            self.nets.append(hn)
-
-    def forward(self, z):
-        '''
-        Args:
-            z: Embedding. Input to hypernetwork. Could be output of "Autodecoder" (see above)
-
-        Returns:
-            params: OrderedDict. Can be directly passed as the "params" parameter of a MetaModule.
-        '''
-        params = OrderedDict()
-        for name, net, param_shape in zip(self.names, self.nets, self.param_shapes):
-            batch_param_shape = (-1,) + param_shape
-            params[name] = net(z).reshape(batch_param_shape)
-        return params
-
-
-class LowRankHyperNetwork(nn.Module):
-    def __init__(self, hyper_in_features, hyper_hidden_layers, hyper_hidden_features, hypo_module, linear=False,
-                 rank=10):
-        '''
-
-        Args:
-            hyper_in_features: In features of hypernetwork
-            hyper_hidden_layers: Number of hidden layers in hypernetwork
-            hyper_hidden_features: Number of hidden units in hypernetwork
-            hypo_module: MetaModule. The module whose parameters are predicted.
-        '''
-        super().__init__()
-
-        self.hypo_parameters = dict(hypo_module.meta_named_parameters())
-        self.representation_dim = 0
-
-        self.rank = rank
-        self.names = []
-        self.nets = nn.ModuleList()
-        self.param_shapes = []
-        for name, param in self.hypo_parameters.items():
-            self.names.append(name)
-            self.param_shapes.append(param.size())
-
-            out_features = int(torch.prod(torch.tensor(param.size()))) if 'bias' in name else param.shape[0]*rank + param.shape[1]*rank
-            self.representation_dim += out_features
-
-            hn = FCBlock(in_features=hyper_in_features, out_features=out_features,
-                                 num_hidden_layers=hyper_hidden_layers, hidden_ch=hyper_hidden_features,
-                                 outermost_linear=True)
-            self.nets.append(hn)
-
-    def forward(self, z):
-        '''
-        Args:
-            z: Embedding. Input to hypernetwork. Could be output of "Autodecoder" (see above)
-
-        Returns:
-            params: OrderedDict. Can be directly passed as the "params" parameter of a MetaModule.
-        '''
-        params = OrderedDict()
-        representation = []
-        for name, net, param_shape in zip(self.names, self.nets, self.param_shapes):
-            low_rank_params = net(z)
-            representation.append(low_rank_params.detach())
-
-            if 'bias' in name:
-                batch_param_shape = (-1,) + param_shape
-                params[name] = low_rank_params.reshape(batch_param_shape)
-            else:
-                a = low_rank_params[:, :self.rank*param_shape[0]].view(-1, param_shape[0], self.rank)
-                b = low_rank_params[:, self.rank*param_shape[0]:].view(-1, self.rank, param_shape[1])
-                low_rank_w = a.matmul(b)
-                params[name] = self.hypo_parameters[name] * torch.sigmoid(low_rank_w)
-
-        representations = representation
-        representation = torch.cat(representation, dim=-1).cuda()
-        return {'params':params, 'representation':representation, 'representations': representations}
-
-    def gen_params(self, representation):
-        params = OrderedDict()
-        start = 0
-
-        for name, net, param_shape in zip(self.names, self.nets, self.param_shapes):
-            if 'bias' in name:
-                nelem = np.prod(param_shape)
-            else:
-                nelem = param_shape[0] * self.rank + param_shape[1] * self.rank
-
-            low_rank_params = representation[:, start:start+nelem]
-
-            if 'bias' in name:
-                batch_param_shape = (-1,) + param_shape
-                params[name] = low_rank_params.reshape(batch_param_shape)
-            else:
-                a = low_rank_params[:, :self.rank*param_shape[0]].view(-1, param_shape[0], self.rank)
-                b = low_rank_params[:, self.rank*param_shape[0]:].view(-1, self.rank, param_shape[1])
-                low_rank_w = a.matmul(b)
-                params[name] = self.hypo_parameters[name] * torch.sigmoid(low_rank_w)
-
-            start = start + nelem
-
-        return {'params':params, 'representation':representation}
 
 class CIFAR10():
     def __init__(self, data_path):
@@ -349,8 +278,6 @@ class CIFAR10():
                 'query':{'x':self.meshgrid, 'y':img_flat},
                 'label':label}
 
-def rotate(inputs, x):
-    return torch.from_numpy(ndimage.rotate(inputs, x, reshape=False))
 
 class MNIST():
     def __init__(self, data_path):
@@ -375,20 +302,14 @@ class MNIST():
         
     def __getitem__(self, item):
         img, label = self.dataset[item]
-        img30 = rotate(img,30)
-        imgm30 = rotate(img,-30)
         img_flat = img.view(-1, 1)
-        img30 = img30.view(-1,1)
-        imgm30 = imgm30.view(-1,1)
         return {'context':{'x':self.meshgrid, 'y':img_flat}, 
-                'context30':{'x':self.meshgrid, 'y':img30},
-                'contextm30':{'x':self.meshgrid, 'y':imgm30},
                 'label':label,
                 'index':item}
 
 
 def l2_loss(prediction, gt):
-    return ((prediction - gt)**2).mean()
+    return ((prediction - gt)**2).mean() + 1e-6 
 
 
 def lin2img(tensor):
@@ -445,111 +366,74 @@ def MNIST_test():
     img_siren = Siren(in_features=in_features, hidden_features=hidden_features, 
                         hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True)
 
-    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren)
-    # HyperNetEmbedd= nn.DataParallel(HyperNetEmbedd)
-    print(HyperNetEmbedd)
+    GM = GraphFeatureMap_Manifold(in_features=2,out_features=hyper_in_features //2, bias=False).cuda()
+    HyperNetEmbedd = Hyper_Net_Embedd(len(dataset),hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren,GM)
+    # print(HyperNetEmbedd.get_embedd(5))
     HyperNetEmbedd.cuda()
 
-    optim = torch.optim.Adam(lr=0.0001, params=HyperNetEmbedd.parameters())#,weight_decay=0.1,betas=(0.0, 0.9))
+    optim = torch.optim.Adam(lr=0.0001, params=HyperNetEmbedd.parameters())
     train_scheduler = torch.optim.lr_scheduler.StepLR(optim,10,gamma=0.5)
+
+    optim2 = torch.optim.Adam(lr=0.0001, params=GM.parameters())
+    train_scheduler2 = torch.optim.lr_scheduler.StepLR(optim2,10,gamma=0.5)
     steps_til_summary = 100
     log_dir = os.path.join(here, './output')
     check_point_dir = os.path.join(here, './checkpoint8')
     writer = SummaryWriter(log_dir=log_dir)
     iteration = 0
 
+    #torch.autograd.set_detect_anomaly(True)
     for epoch in range(1,50):
-        # index_start = 0
-        # index_end = 0
+
         for step, sample in enumerate(dataloader):
-            # index_end = index_start + len(sample['label'])
-            # #print('from {} to {}'.format(index_start,index_end))
-            # index_end = len(dataset) if index_end > len(dataset) - 1 else index_end
+
             sample = dict_to_gpu(sample)
-            # feats = np.arange(index_start,index_end,1)
             feats = sample['index']
             labels = sample['label']
-            # keys = torch.unique(labels)
-            # labels = labels.detach().cpu().numpy()
-            # keys = keys.detach().cpu().numpy()
-            #print(feats)
-            #print(feats)
-            # feats = feats.cuda()
+
             loss = 0.0
-            #print(step)
-            index_dict = {}
+
             loss_reconstruction = 0.0
-            # print(index_dict)
-            l0 = []
-            l1 = []
-            l2 = []
-            l3 = []
-            l4 = []
-            l5 = []
-            l6 = []
-            l7 = []
-            l8 = []
-            l9 = []
+
             if not feats.numel():
                 print('continue')
                 continue
+
+            # for param in HyperNetEmbedd.parameters():
+            #     param.requires_grad = False
             for idx in range(len(feats)):
+                loss_GM = 0.0
                 feat = feats[idx]
+                HyperNetEmbedd.set_GM(GM,feat)
+                # for param in GM.parameters():
+                #     print(param)
                 embedding, model_output = HyperNetEmbedd(feat.unsqueeze(0))
                 param = model_output
-                output = img_siren(sample['context']['x'][idx],params=param)
+                input = GM(sample['context']['x'][idx])
+                output = img_siren(input,params=param)
+                loss_GM = l2_loss(output,sample['context']['y'][idx]) 
+                optim2.zero_grad()
+                loss_GM.backward()
+                optim2.step() 
+                HyperNetEmbedd.set_embedd(GM,feat)
+
+            # for param in HyperNetEmbedd.parameters():
+            #     param.requires_grad = True
+
+
+            # for param in GM.parameters():
+            #     param.requires_grad = False
+
+            for idx in range(len(feats)):
+                loss_GM = 0.0
+                feat = feats[idx]
+
+                embedding, model_output = HyperNetEmbedd(feat.unsqueeze(0))
+                param = model_output
+                input = GM(sample['context']['x'][idx])
+                output = img_siren(input,params=param)
                 loss_reconstruction += l2_loss(output,sample['context']['y'][idx]) 
-                loss_reconstruction += l2_loss(output,sample['context30']['y'][idx]) 
-                loss_reconstruction += l2_loss(output,sample['contextm30']['y'][idx]) 
-                # v_i = labels[idx]
-                # if v_i == 0:
-                #     l0.append(embedding)
-                # elif v_i == 1:
-                #     l1.append(embedding)
-                # elif v_i == 2:
-                #     l2.append(embedding)
-                # elif v_i == 3:
-                #     l3.append(embedding)
-                # elif v_i == 4:
-                #     l4.append(embedding)
-                # elif v_i == 5:
-                #     l5.append(embedding)
-                # elif v_i == 6:
-                #     l6.append(embedding)
-                # elif v_i == 7:
-                #     l7.append(embedding)
-                # elif v_i == 8:
-                #     l8.append(embedding)
-                # elif v_i == 9:
-                #     l9.append(embedding)
-                # else:
-                #     pass
 
-            # if len(l0)>1:
-            #     index_dict[0] = l0
-            # if len(l1)>1:
-            #     index_dict[1] = l1
-            # if len(l2)>1:
-            #     index_dict[2] = l2
-            # if len(l3)>1:
-            #     index_dict[3] = l3
-            # if len(l4)>1:
-            #     index_dict[4] = l4
-            # if len(l5)>1:
-            #     index_dict[5] = l5
-            # if len(l6)>1:
-            #     index_dict[6] = l6
-            # if len(l7)>1:
-            #     index_dict[7] = l7
-            # if len(l8)>1:
-            #     index_dict[8] = l8
-            # if len(l9)>1:
-            #     index_dict[9] = l9
-
-            # # print('the length of label 1 is {}'.format(len(index_dict.keys())))
-            # loss_dist = cdist(index_dict)
-            # loss_reconstruction = loss_reconstruction/batch_size
-            # loss = 0.3*loss_reconstruction + 0.7*loss_dist
             loss = loss_reconstruction
 
             if not step % steps_til_summary:
@@ -559,9 +443,13 @@ def MNIST_test():
                 
 
             # index_start = index_end
+
             optim.zero_grad()
             loss.backward()
-            optim.step()      
+            optim.step()     
+
+            # for param in GM.parameters():
+            #     param.requires_grad = True
 
             iteration += 1
 
@@ -593,25 +481,8 @@ def MNIST_test():
         if(train_scheduler.get_last_lr()[0] > 1e-6):
             train_scheduler.step()
         
-        print('the learning rate is {}'.format(train_scheduler.get_last_lr()))
-
-        # indices = np.random.randint(0,len(dataset),size=200)
-        # with torch.no_grad():
-        #     X = []
-        #     for i in indices:
-        #         i_t = torch.tensor(i)
-        #         i_t_c = i_t.cuda()
-        #         embedd = HyperNetEmbedd.get_embedd(index=i_t_c)
-        #         X.append(embedd)
-        #     X = torch.stack(X,dim=0)
-        #     print(X.shape)
-
         train_scheduler.step()
         print('the learning rate is {}'.format(train_scheduler.get_last_lr()))
-        #     dist1 = dist(X,X)
-        #     print('the dist is {}'.format(dist1))
-
-        #     writer.add_scalar('distance', dist1, epoch)
 
     state_dict = HyperNetEmbedd.state_dict()
     for k, v in state_dict.items():
@@ -636,7 +507,7 @@ def main():
     img_siren = Siren(in_features=in_features, hidden_features=hidden_features, 
                         hidden_layers=hidden_layers, out_features=out_features, outermost_linear=True).cuda()
 
-    hyper_network = HyperNetwork(hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
+    hyper_network = Hyper_Net_Embedd(hyper_in_features,hyper_hidden_layers,hyper_hidden_features,img_siren).cuda()
 
     
 
@@ -788,3 +659,5 @@ def main():
 if __name__ == '__main__':
     # device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
     MNIST_test()
+
+
